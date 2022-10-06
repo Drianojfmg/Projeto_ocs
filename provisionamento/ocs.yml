@@ -1,0 +1,303 @@
+---
+- name: "Provisionamento do Vagrant da VM de ocs"
+  hosts: all
+  become: yes
+  become_user: root
+  any_errors_fatal: true
+
+  vars_files:
+    - "{{ var_dir_vars | default('/Ocs/arquivos/protegidos/ansible') }}/vars.yml"
+
+  tasks:
+
+  - name: "Passo 01: Instalando colecao do Ansible."
+    shell: "ansible-galaxy collection install {{ item }}"
+    loop:
+      - community.mysql
+      - community.general
+
+  - name: "Passo 02: Instalando dependencias"
+    apt:
+      name:
+        - "debconf"
+        - "debconf-utils"
+        - "python3-pymysql"
+        - "python3-apt"
+      state: present
+      update_cache: yes
+      cache_valid_time: 600
+
+  - name: "Passo 03: Configurando instalacao do MySQL"
+    debconf:
+      name: 'mysql-server'
+      question: "{{ item.pergunta | quote }}"
+      value: "{{ item.valor | quote }}"
+      vtype: 'password'
+    no_log: True
+    loop:
+      - pergunta: "mysql-server/root_password"
+        valor: admin
+      - pergunta: "mysql-server/root_password_again"
+        valor: admin
+
+  - name: "Passo 04: Instalando o MySQL"
+    apt:
+      name:
+        - mysql-server-8.0
+        - mysql-client-8.0
+        - mysql-common
+      state: present
+      update_cache: yes
+      cache_valid_time: 600
+
+  - name: "Passo 05: Instando pacotes extras."
+    apt:
+      name:
+        - make
+        - cmake
+        - gcc
+        - make
+        - git
+        - curl
+        - unzip
+      state: present
+      update_cache: yes
+      cache_valid_time: 600
+
+  - name: "Passo 06: Instalando LAMP Server On Ubuntu 20.04."
+    apt:
+      name:
+        - apache2
+        - libapache2-mod-perl2
+        - libapache-dbi-perl
+        - libapache-db-perl
+        - php7.4
+        - libapache2-mod-php7.4
+        - php7.4-common
+        - php7.4-sqlite3
+        - php7.4-mysql
+        - php7.4-gmp
+        - php7.4-curl
+        - php7.4-mbstring
+        - php7.4-gd
+        - php7.4-cli
+        - php7.4-xml
+        - php7.4-zip
+        - php7.4-soap
+        - php7.4-json
+        - php-pclzip
+        - python3-mysqldb
+        - python3-pymysql
+        - composer
+      state: present
+      update_cache: yes
+      cache_valid_time: 600
+
+  - name: "Passo 07: Adicionando configurações ao arquivo php.ini"
+    replace:
+      path: /etc/php/7.4/cli/php.ini
+      regexp: "{{ item.regexp }}"
+      replace: "{{ item.replace }}"
+    loop:
+      - regexp: '^(\s*;date.timezone).*$'
+        replace: 'date.timezone = America/Sao_Paulo'
+      
+      - regexp: '^(\s*memory_limit).*$'
+        replace: '\1 = 256M'
+      
+      - regexp: '^(\s*post_max_size).*$'
+        replace: '\1 = 100M'
+      
+      - regexp: '^(\s*upload_max_filesize).*$'
+        replace: '\1 = 100M'
+      
+      - regexp: '^(\s*max_execution_time).*$'
+        replace: '\1 = 360'
+    
+  - name: "Passo 08: As credenciais do php.ini no Apache, tem que ser as mesmas do php.ini que estão no Passo 07"
+    replace:
+      path: /etc/php/7.4/apache2/php.ini
+      regexp: "{{ item.regexp }}"
+      replace: "{{ item.replace }}"
+    loop:
+      - regexp: '^(\s*;date.timezone).*$'
+        replace: 'date.timezone = America/Sao_Paulo'
+      
+      - regexp: '^(\s*memory_limit).*$'
+        replace: '\1 = 256M'
+      
+      - regexp: '^(\s*post_max_size).*$'
+        replace: '\1 = 100M'
+      
+      - regexp: '^(\s*upload_max_filesize).*$'
+        replace: '\1 = 100M'
+      
+      - regexp: '^(\s*max_execution_time).*$'
+        replace: '\1 = 360'
+
+  - name: "Step 7.2: Copiando my.cnf com as novas alteraçoes"
+    template:
+      src: /Ocs/provisionamento/arquivos/my.cnf.j2
+      dest: /root/.my.cnf
+      owner: root
+      group: root
+      mode: '0664'
+
+  - name: "Step 08: Instalando Perl & its Modules."
+    apt:
+      name:
+        - perl 
+        - libxml-simple-perl
+        - libcompress-zlib-perl
+        - libdbi-perl
+        - libdbd-mysql-perl
+        - libnet-ip-perl
+        - libsoap-lite-perl
+        - libio-compress-perl
+        - libapache-dbi-perl
+        - libapache2-mod-perl2
+        - libapache2-mod-perl2-dev
+      state: present
+      update_cache: yes
+      cache_valid_time: 600
+
+  - name: "Step 09: Adicionando configs iniciais do perl"
+    shell: "curl -L http://cpanmin.us | perl - --self-upgrade"
+      
+  - name: "Step 9.1: Instalando modulos do perl"
+    cpanm:
+      name: "{{ item }}"
+    loop:
+      - Apache2::SOAP
+      - XML::Entities
+      - Net::IP
+      - Apache::DBI
+      - Mojolicious
+      - Switch
+      - Plack::Handler
+      - Archive::Zip
+
+  - name: "Passo 10: Criando um novo banco com nome de ocsdb"
+    mysql_db:
+      name: ocsdb
+      state: present
+
+  - name: "Passo 10.1: Criando um usuário para o banco"
+    mysql_user:
+      name: userocs
+      password: admin
+      priv: '*.*:ALL'
+      state: present
+
+  - name: "Step 11: Download & Install OCS Inventory"
+    git:
+      repo: https://github.com/OCSInventory-NG/OCSInventory-Server.git
+      version: master
+      dest: /home/vagrant/OCSInventory-Server
+      update: yes
+      accept_hostkey: yes
+      force: yes
+  
+  - name: "Step 11.1: Download & Install OCS Inventory"
+    git:
+      repo: https://github.com/OCSInventory-NG/OCSInventory-ocsreports.git
+      version: master
+      dest: /home/vagrant/OCSInventory-Server/ocsreports
+      accept_hostkey: yes
+
+  - name: "Step 12: Change the working directory to somedir/ before executing the command"
+    ansible.builtin.shell: curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+    args:
+      chdir: /home/vagrant/OCSInventory-Server/ocsreports/
+
+  - name: "Step 13 Modificando usuario e senha no arquivo de setup.sh"
+    replace:
+      path: "/home/vagrant/OCSInventory-Server/setup.sh"
+      regexp: "{{ item.regexp }}"
+      replace: "{{ item.replace }}"
+    loop:
+      - regexp: '^(DB_SERVER_USER)=.*$'
+        replace: '\1="{{ exvar_servicos.ocs.db_user }}"'
+      - regexp: '^(DB_SERVER_PWD)=.*$'
+        replace: '\1="{{ exvar_servicos.ocs.db_pswd }}"'
+
+  - name: "Passo 13.1: Adicionando SIM às respostas feitas durante a instalação"
+    ansible.builtin.copy:
+      src: /Ocs/provisionamento/arquivos/respsetup
+      dest: /home/vagrant/OCSInventory-Server/respsetup
+      owner: root
+      group: root
+      mode: '0755'
+
+  - name: "Setup"
+    ansible.builtin.shell: "cat respsetup | ./setup.sh"
+    args:
+      chdir: /home/vagrant/OCSInventory-Server/ 
+       
+  - name: "Passo 14: Criando link simbolicos"
+    command: >
+      a2enconf {{ item }}
+    args:
+      creates: "/etc/apache2/conf-enabled/{{ item }}.conf"
+    loop:
+      - ocsinventory-reports.conf
+      - z-ocsinventory-server.conf
+      - zz-ocsinventory-restapi.conf
+
+  - name: "Step 15: Alterando permissão: ./var/lib/ocsinventory-reports"
+    ansible.builtin.file:
+      path: /var/lib/ocsinventory-reports
+      owner: www-data
+      group: www-data
+      recurse: yes
+
+  - name: "Step 16: Composer install"
+    composer:
+      command: install
+      working_dir: /usr/share/ocsinventory-reports/ocsreports/
+
+  - name: "Passo 17: Modificando usuario e senha no arquivo zz-ocsinventory-restapi"
+    replace:
+      path: "/etc/apache2/conf-available/zz-ocsinventory-restapi.conf"
+      regexp: "{{ item.regexp }}"
+      replace: "{{ item.replace }}"
+    loop:
+      - regexp: '^(\s*\$ENV{OCS_DB_LOCAL})\s*=.*$'
+        replace: "\\1 = '{{ exvar_servicos.ocs.db_name }}';"
+      - regexp: '^(\s*\$ENV{OCS_DB_USER})\s*=.*$'
+        replace: "\\1 = '{{ exvar_servicos.ocs.db_user }}';"
+      - regexp: '^(\s*\$ENV{OCS_DB_PWD})\s*=.*$'
+        replace: "\\1 = '{{ exvar_servicos.ocs.db_pswd }}';"
+      
+  - name: "Passo 18: Modificando usuario e senha no arquivo z-ocsinventory-restapi"
+    replace:
+      path: /etc/apache2/conf-available/z-ocsinventory-server.conf
+      regexp: "{{ item.regexp }}"
+      replace: "{{ item.replace }}"
+    loop:
+      - regexp: '^(\s*PerlSetEnv OCS_DB_NAME).*$'
+        replace: '\1 {{ exvar_servicos.ocs.db_name }}'
+      - regexp: '^(\s*PerlSetEnv OCS_DB_LOCAL).*$'
+        replace: '\1 {{ exvar_servicos.ocs.db_server }}'
+      - regexp: '^(\s*PerlSetEnv OCS_DB_USER).*$'
+        replace: '\1 {{ exvar_servicos.ocs.db_user }}'
+      - regexp: '^(\s*PerlSetVar OCS_DB_PWD).*$'
+        replace: '\1 {{ exvar_servicos.ocs.db_pswd }}'
+        
+  - name: "Passo 19: Copiando dbconfig"
+    template:
+      src: /Ocs/provisionamento/arquivos/dbconfig.inc.php.j2
+      dest: /usr/share/ocsinventory-reports/ocsreports/dbconfig.inc.php
+      owner: www-data
+      group: www-data
+      mode: '0644'
+
+  - name: "Passo 21: Reiniciando o Apache"
+    service:
+      name: apache2
+      state: restarted    
+
+  # - name: "Step 22: Removendo a diretorio PHP install"
+  #   file:
+  #     state: absent
+  #     path: /usr/share/ocsinventory-reports/ocsreports/install.php
